@@ -1,0 +1,26 @@
+# --- Arduino IDE ---
+# Ignore compiled binaries and object files
+*.elf
+*.hex
+*.bin
+*.o
+*.a
+*.d
+
+# Ignore the build directory created by Arduino IDE 2.x
+build/
+bin/
+
+# --- Libraries and Hardware ---
+# Usually, you don't want to track local library copies
+# unless you specifically included them in your project folder
+# libraries/
+
+# --- Operating System Files ---
+.DS_Store
+Thumbs.db
+
+# --- Sensitive Info ---
+# If you have a file containing Wi-Fi credentials or API keys, 
+# name it 'secrets.h' and uncomment the line below:
+# secrets.h
