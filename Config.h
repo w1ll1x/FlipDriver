@@ -41,7 +41,8 @@ const int LED_OE_PIN    = 5;   // Connects to Box Header Pin 4 (Active LOW)
 const int LED_ROW_A     = A0;  // Connects to Box Header Pin 5 (Also Watchdog Trigger)
 const int LED_ROW_B     = A1;  // Connects to Box Header Pin 6
 const int LED_ROW_C     = A2;  // Connects to Box Header Pin 3
-  
+
+const int PIN_RELAY     = A3;  
 
 // ==========================================
 // 4. NETWORK & API CONFIGURATION
