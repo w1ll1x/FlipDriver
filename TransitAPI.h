@@ -13,6 +13,10 @@ namespace TransitAPI {
     // Updates the destination and timeString variables. Returns true if successful.
     bool fetchPrediction(int queryIndex, String &destination, String &timeString);
 
+    // Fetches up to maxResults predictions for a route in one HTTP call.
+    // Fills destinations[] and timeStrings[] arrays. Returns number of valid results found.
+    int fetchPredictions(int queryIndex, String destinations[], String timeStrings[], int maxResults);
+
 }
 
 #endif // TRANSIT_API_H

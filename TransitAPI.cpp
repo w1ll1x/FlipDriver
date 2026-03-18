@@ -164,4 +164,64 @@ namespace TransitAPI {
         return true;
     }
 
+    // Same single HTTP call as fetchPrediction but collects up to maxResults valid trains.
+    int fetchPredictions(int queryIndex, String destinations[], String timeStrings[], int maxResults) {
+        if (WiFi.status() != WL_CONNECTED) {
+            WiFi.begin(WIFI_SSID, WIFI_PASS);
+            return 0;
+        }
+
+        RouteQuery q = queries[queryIndex];
+
+        if (!client.connect(host, httpsPort)) return 0;
+
+        client.print(String("GET ") + q.url + " HTTP/1.1\r\n" +
+                     "Host: " + host + "\r\n" +
+                     "Accept: application/vnd.api+json\r\n" +
+                     (String(MBTA_API_KEY).length() > 0 ? String("x-api-key: ") + MBTA_API_KEY + "\r\n" : "") +
+                     "Connection: close\r\n\r\n");
+
+        unsigned long timeout = millis();
+        while (client.available() == 0) {
+            HardwareLED::scan();
+            if (millis() - timeout > 5000) { client.stop(); return 0; }
+        }
+
+        while (client.connected()) {
+            String line = client.readStringUntil('\n');
+            if (line == "\r") break;
+        }
+
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, client);
+        if (error) { client.stop(); return 0; }
+
+        int found = 0;
+        JsonArray data = doc["data"].as<JsonArray>();
+        for (JsonObject item : data) {
+            if (found >= maxResults) break;
+            const char* status  = item["attributes"]["status"];
+            const char* depTime = item["attributes"]["departure_time"];
+            const char* arrTime = item["attributes"]["arrival_time"];
+            const char* tIso    = (depTime != nullptr) ? depTime : arrTime;
+            unsigned long epoch = isoToEpoch(tIso);
+            if (epoch > 0 || status != nullptr) {
+                timeStrings[found]  = formatSignTime(epoch, status);
+                destinations[found] = q.fallbackHeadsign;
+                if (q.dynamicHeadsign) {
+                    const char* tripId   = item["relationships"]["trip"]["data"]["id"];
+                    const char* headsign = findTripHeadsign(doc, tripId);
+                    if (headsign != nullptr) {
+                        destinations[found] = String(headsign);
+                        destinations[found].toUpperCase();
+                    }
+                }
+                found++;
+            }
+        }
+
+        client.stop();
+        return found;
+    }
+
 } // end namespace
