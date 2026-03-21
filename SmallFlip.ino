@@ -10,6 +10,7 @@
 #include "WiFiManager.h"
 #include "QuoteAPI.h"
 #include "TransitAPI.h"
+// #include "EyesAnimation.h"
 
 // We need access to the memory buffers to track the physical dots
 extern bool current_buffer[DISPLAY_WIDTH][DISPLAY_HEIGHT];
@@ -43,6 +44,7 @@ enum Phase {
     PH_DISPLAY_TRANSIT,
     PH_FADE_OUT,        // noise wipe (kept for future use; currently: transit → black)
     PH_FADE_IN,         // settle dots into target content (shared)
+    PH_EYES,            // eyes animation between transit and quote
     PH_TYPEWRITER       // type new quote onto blank screen
 };
 Phase currentPhase = PH_DISPLAY_QUOTE;
@@ -53,6 +55,7 @@ unsigned long lastFrameTime  = 0;
 
 const unsigned long QUOTE_DISPLAY_MS   = 300000UL; // 5 minutes
 const unsigned long TRANSIT_DISPLAY_MS =  20000UL; // 20 seconds
+const unsigned long EYES_DISPLAY_MS    =  20000UL; // 20 seconds
 const unsigned long FADE_OUT_MS        =   4000;   // 4 seconds of escalating noise
 const unsigned long FRAME_DT           =     25;   // ms per animation frame
 
@@ -67,9 +70,20 @@ const unsigned int TW_MAX_MS        = 210;  // slowest keystroke
 const unsigned int TW_THINK_CHANCE  =  30;  // % chance of a "thinking" pause before each word
 const unsigned int TW_THINK_MIN_MS  = 700;  // shortest thinking pause
 const unsigned int TW_THINK_MAX_MS  = 1800; // longest thinking pause
-int           tw_charIdx     = 0;    // next character to type
-int           tw_cursorX     = 0;    // x position of next character
-unsigned long tw_nextCharTime = 0;   // millis() when to type the next character
+const unsigned long TW_PRE_MIN_MS   = 1000; // min cursor-blink time before typing starts
+const unsigned long TW_PRE_MAX_MS   = 3000; // max cursor-blink time before typing starts
+int           tw_charIdx      = 0;
+int           tw_cursorX      = 0;
+unsigned long tw_nextCharTime = 0;
+bool          tw_preTyping    = false;  // true while cursor blinks before first keypress
+unsigned long tw_preTypeEnd   = 0;
+
+// --- Cursor State ---
+const unsigned long CURSOR_ON_MS  = 400;
+const unsigned long CURSOR_OFF_MS = 300;
+const int           CURSOR_WIDTH  = 1;
+bool          cursor_visible   = false;
+unsigned long cursor_nextBlink = 0;
 
 
 // ==========================================
@@ -563,7 +577,7 @@ void loop() {
             Serial.println("[TRANSIT] Display time elapsed — fading to black, then typewriter");
             currentQuote = nextQuote;
             GraphicsEngine::clearBuffer();  // next_buffer = all black → fade to blank screen
-            beginFadeOut(PH_TYPEWRITER);
+            beginFadeOut(PH_TYPEWRITER);    // was PH_EYES when eyes were enabled
         }
     }
 
@@ -627,6 +641,10 @@ void loop() {
         }
 
         if (todoCnt == 0) {
+            // if (pendingPhase == PH_EYES) {
+            //     Serial.println("[FADE_IN] Complete → EYES");
+            //     Eyes::begin();
+            // } else
             if (pendingPhase == PH_TYPEWRITER) {
                 // Compute centered start x for the quote, reset typewriter cursor
                 int textW  = GraphicsEngine::getStringWidth(currentQuote);
@@ -634,7 +652,10 @@ void loop() {
                 if (startX < 0) startX = 0;
                 tw_charIdx      = 0;
                 tw_cursorX      = startX;
-                tw_nextCharTime = millis() + (unsigned long)random(TW_MIN_MS, TW_MAX_MS + 1);
+                tw_preTyping    = true;
+                tw_preTypeEnd   = millis() + (unsigned long)random(TW_PRE_MIN_MS, TW_PRE_MAX_MS + 1);
+                cursor_visible  = false;
+                cursor_nextBlink = millis();
                 GraphicsEngine::clearBuffer();  // keep next_buffer clean for drawChar
                 Serial.println("[FADE_IN] Complete → TYPEWRITER");
             }
@@ -644,16 +665,66 @@ void loop() {
     }
 
     // ==========================================
+    // PHASE: EYES (animation between transit and quote) — currently disabled
+    // ==========================================
+    // else if (currentPhase == PH_EYES) {
+    //     Eyes::tick();
+    //     if (now - phaseStartTime >= EYES_DISPLAY_MS) {
+    //         Serial.println("[EYES] Complete → fading to black, then typewriter");
+    //         GraphicsEngine::clearBuffer();
+    //         beginFadeOut(PH_TYPEWRITER);
+    //     }
+    // }
+
+    // ==========================================
     // PHASE: TYPEWRITER (type quote letter by letter onto blank screen)
     // No network calls. Dot movement only.
     // ==========================================
     else if (currentPhase == PH_TYPEWRITER) {
-        if (tw_charIdx < (int)currentQuote.length()) {
-            if (millis() >= tw_nextCharTime) {
+
+        // --- Cursor blink (runs every iteration) ---
+        if (now >= cursor_nextBlink) {
+            bool show = !cursor_visible;
+            for (int cx = tw_cursorX; cx < tw_cursorX + CURSOR_WIDTH && cx < DISPLAY_WIDTH; cx++) {
+                for (int cy = 0; cy < DISPLAY_HEIGHT; cy++) {
+                    bool target = show ? YELLOW : (bool)next_buffer[cx][cy];
+                    if (current_buffer[cx][cy] != target) {
+                        HardwareFlip::flipDot(cx, cy, target);
+                        current_buffer[cx][cy] = target;
+                    }
+                }
+            }
+            cursor_visible   = show;
+            cursor_nextBlink = now + (show ? CURSOR_ON_MS : CURSOR_OFF_MS);
+        }
+
+        // --- Pre-typing: cursor blinks on blank screen before first keypress ---
+        if (tw_preTyping) {
+            if (now >= tw_preTypeEnd) {
+                tw_preTyping    = false;
+                tw_nextCharTime = now + (unsigned long)random(TW_MIN_MS, TW_MAX_MS + 1);
+            }
+
+        // --- Typing ---
+        } else if (tw_charIdx < (int)currentQuote.length()) {
+            if (now >= tw_nextCharTime) {
+                // Erase cursor so the incoming character draws cleanly
+                if (cursor_visible) {
+                    for (int cx = tw_cursorX; cx < tw_cursorX + CURSOR_WIDTH && cx < DISPLAY_WIDTH; cx++) {
+                        for (int cy = 0; cy < DISPLAY_HEIGHT; cy++) {
+                            bool target = (bool)next_buffer[cx][cy];
+                            if (current_buffer[cx][cy] != target) {
+                                HardwareFlip::flipDot(cx, cy, target);
+                                current_buffer[cx][cy] = target;
+                            }
+                        }
+                    }
+                    cursor_visible = false;
+                }
+
                 char c       = currentQuote[tw_charIdx];
                 int  advance = GraphicsEngine::drawChar(tw_cursorX, 6, c);
 
-                // Flip any newly lit pixels in the character's column range
                 for (int x = tw_cursorX; x < tw_cursorX + advance && x < DISPLAY_WIDTH; x++) {
                     if (x < 0) continue;
                     for (int y = 0; y < DISPLAY_HEIGHT; y++) {
@@ -667,8 +738,6 @@ void loop() {
                 tw_cursorX += advance;
                 tw_charIdx++;
 
-                // Check if the NEXT character starts a new word (current char was a space,
-                // or this is the very first character). If so, maybe take a thinking pause.
                 bool nextIsWordStart = (tw_charIdx < (int)currentQuote.length()) &&
                                        (tw_charIdx == 0 || c == ' ');
                 unsigned long delay_ms;
@@ -680,17 +749,30 @@ void loop() {
                 } else {
                     delay_ms = (unsigned long)random(TW_MIN_MS, TW_MAX_MS + 1);
                 }
-                tw_nextCharTime = millis() + delay_ms;
+                tw_nextCharTime = now + delay_ms;
                 Serial.print("[TYPEWRITER] '");
                 Serial.print(c);
                 Serial.print("'  x=");
                 Serial.println(tw_cursorX);
             }
+
+        // --- Done typing: erase cursor and transition ---
         } else {
-            // All characters typed — quote fully on screen
+            if (cursor_visible) {
+                for (int cx = tw_cursorX; cx < tw_cursorX + CURSOR_WIDTH && cx < DISPLAY_WIDTH; cx++) {
+                    for (int cy = 0; cy < DISPLAY_HEIGHT; cy++) {
+                        if (current_buffer[cx][cy]) {
+                            HardwareFlip::flipDot(cx, cy, BLACK);
+                            current_buffer[cx][cy] = BLACK;
+                        }
+                    }
+                }
+                cursor_visible = false;
+            }
             Serial.println("[TYPEWRITER] Complete → DISPLAY_QUOTE");
             currentPhase   = PH_DISPLAY_QUOTE;
             phaseStartTime = millis();
         }
     }
 }
+
